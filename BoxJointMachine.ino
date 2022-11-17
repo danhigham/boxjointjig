@@ -1,15 +1,13 @@
-#include <EncoderButton.h>
-// EncoderButton eb1(51, 49, 53);
-EncoderButton eb1(50, 48, 52);
-
-#include <Encoder.h>
-
 #include <MCUFRIEND_kbv.h>
 MCUFRIEND_kbv tft;
+
+#include <AceButton.h>
+#include "boxjointmachine.h"
 
 // Assign human-readable names to some common 16-bit color values:
 #define BLACK   0x0000
 #define BLUE    0x001F
+#define DARK_BLUE 0x085d
 #define RED     0xF800
 #define GREEN   0x07E0
 #define CYAN    0x07FF
@@ -22,10 +20,15 @@ MCUFRIEND_kbv tft;
 #define TEXT_SCREEN_MARGIN 40
 #define VERTICAL_TEXT_SPACING 10
 
-#define R_CLK_PIN  48
-#define R_DATA_PIN 50
+#define SETTING_TXT_SIZE 10
+#define TITLE_TXT_SIZE 3
+#define MENU_ITEM_TXT_SIZE 2
 
-uint16_t version = MCUFRIEND_KBV_H_;
+#define BG_COLOR DARK_BLUE
+
+#define CLK 48
+#define DATA 50
+#define BUTTON 52
 
 void testFunction() {
   Serial.println("foo");
@@ -35,22 +38,31 @@ void testFunction2() {
   Serial.println("bar");
 }
 
-typedef void (*menuFunction)();
+using namespace ace_button;
+AceButton button(BUTTON);
+void handleEvent(AceButton*, uint8_t, uint8_t);
 
-typedef struct menuItem {
-  String caption;
-  menuFunction function;
-  menuItem *children[10];
-};
+uint16_t version = MCUFRIEND_KBV_H_;
+int lcd_height, lcd_width;
+uint16_t text_w, text_h;
+uint16_t title_w, title_h;
 
-struct menuItem topLevel;
-menuItem *currentMenuItem;
-menuItem *previousMenuItem;
-int currentMenuSelectionIdx;
+float p_kerfSize = 3.175;
 
-void getChildMenuCount(int* count) {
+menuItem topLevel;
+menuItem *currentMenuItem, *previousMenuItem;
+int previousMenuSelectionIdx, currentMenuSelectionIdx;
+
+int buttonState;            // the current reading from the input pin
+int lastButtonState = LOW;  // the previous reading from the input pin
+
+unsigned long lastDebounceTime = 0;  // the last time the output pin was toggled
+unsigned long debounceDelay = 50;    // the debounce time; increase if the output flickers
+
+void getChildMenuCount(int* count, menuItem* targetMenuItem) {
+  *count = 0;
   for (int i=0; i < 10; i++) {
-    if (currentMenuItem->children[i] == NULL) break;
+    if (targetMenuItem->children[i] == NULL) break;
     *count = i+1;
   } 
 }
@@ -60,47 +72,39 @@ void getTextDimensions(String text, uint16_t* w, uint16_t* h) {
   tft.getTextBounds(text, 0, 0, &x1, &y1, w, h);
 }
 
-void dummyHandler(){};
+void erasePrevious() {
 
-void drawScreen(bool drawTitle) {
+  drawTitle(previousMenuItem->caption, BG_COLOR);
 
-  uint16_t text_w, text_h;
-  uint16_t title_w, title_h;
-
-  tft.setTextSize(2);
-  getTextDimensions("AAAA", &text_w, &text_h);
-
-  tft.setTextSize(3);
-  getTextDimensions(currentMenuItem->caption, &title_w, &title_h);
-
-  int width = tft.width();
-  int height = tft.height();
-
-  // tft.drawRect(0, 0, width, height, WHITE);
-  tft.drawRect(SCREEN_MARGIN, SCREEN_MARGIN, width - (SCREEN_MARGIN * 2), height - (SCREEN_MARGIN * 2), WHITE);
+  tft.setTextSize(MENU_ITEM_TXT_SIZE);
   
-  if (drawTitle) {
-    tft.setTextSize(3);
-    tft.setTextColor(WHITE);
+  for (int i=0; i < 10; i++) {
+    if (previousMenuItem->children[i] != NULL) {
+      if (i == currentMenuSelectionIdx) {
+        tft.fillRect(SCREEN_MARGIN + 1, SCREEN_MARGIN + ((text_h + VERTICAL_TEXT_SPACING) * i) + 1, 
+          lcd_width - (SCREEN_MARGIN * 2) - 2, text_h + VERTICAL_TEXT_SPACING - 2, BG_COLOR);
+      }
+      tft.setCursor(TEXT_SCREEN_MARGIN, TEXT_SCREEN_MARGIN + ((text_h + VERTICAL_TEXT_SPACING) * i));
+      tft.print(currentMenuItem->children[i]->caption);
+    }
+  }  
+}
 
-    uint16_t offset = (width / 2) - (title_w / 2);
-    tft.setCursor(offset, 5);
-    tft.setTextColor(BLUE);
-    tft.print(previousMenuItem->caption);
-    tft.setCursor(offset, 5);
-    tft.setTextColor(WHITE);
-    tft.print(currentMenuItem->caption);
-  }
+void drawScreen(bool addTitle=false) {
 
-  tft.setTextSize(2);
+  tft.drawRect(SCREEN_MARGIN, SCREEN_MARGIN, lcd_width - (SCREEN_MARGIN * 2), lcd_height - (SCREEN_MARGIN * 2), WHITE);
+
+  if (addTitle) drawTitle(currentMenuItem->caption, WHITE);
+
+  tft.setTextSize(MENU_ITEM_TXT_SIZE);
   
   for (int i=0; i < 10; i++) {
     if (currentMenuItem->children[i] != NULL) {
-      tft.fillRect(SCREEN_MARGIN + 1, SCREEN_MARGIN + ((text_h + VERTICAL_TEXT_SPACING) * i) + 1, 
-        width - (SCREEN_MARGIN * 2) - 2, text_h + VERTICAL_TEXT_SPACING - 2, BLUE);
+      if (i == previousMenuSelectionIdx) tft.fillRect(SCREEN_MARGIN + 1, SCREEN_MARGIN + ((text_h + VERTICAL_TEXT_SPACING) * i) + 1, 
+        lcd_width - (SCREEN_MARGIN * 2) - 2, text_h + VERTICAL_TEXT_SPACING - 2, BG_COLOR);
       if (i == currentMenuSelectionIdx) {
         tft.fillRect(SCREEN_MARGIN + 1, SCREEN_MARGIN + ((text_h + VERTICAL_TEXT_SPACING) * i) + 1, 
-          width - (SCREEN_MARGIN * 2) - 2, text_h + VERTICAL_TEXT_SPACING - 2, WHITE);
+          lcd_width - (SCREEN_MARGIN * 2) - 2, text_h + VERTICAL_TEXT_SPACING - 2, WHITE);
         tft.setTextColor(BLACK);
       } else {
         tft.setTextColor(WHITE);
@@ -111,76 +115,199 @@ void drawScreen(bool drawTitle) {
   }
 }
 
-void onEb1Clicked(EncoderButton& eb) {
-  Serial.print("eb1 clickCount: ");
-  Serial.println(eb.clickCount());
+void selectItem() {
+  // switch menu items
+  int childCount;
+  getChildMenuCount(&childCount, currentMenuItem->children[currentMenuSelectionIdx]);
+  if (childCount > 0) {
+    previousMenuItem = currentMenuItem;
+    erasePrevious();
+    // switch menu items out
+    currentMenuItem = currentMenuItem->children[currentMenuSelectionIdx];
+    currentMenuSelectionIdx = 0;
+    drawScreen(true);
+  } else if (currentMenuItem->function != NULL) currentMenuItem->children[currentMenuSelectionIdx]->function();
 }
 
-void onEb1Encoder(EncoderButton& eb) {
-  int oldIndex = currentMenuSelectionIdx;
-  int childCount;
-  int inc = eb.increment();
-  
-  getChildMenuCount(&childCount);
-  Serial.print("Child count:");
-  Serial.println(childCount);
-  
-  currentMenuSelectionIdx = currentMenuSelectionIdx + inc; 
-  
-  if (currentMenuSelectionIdx < 0) currentMenuSelectionIdx = 0;
-  if (currentMenuSelectionIdx >= childCount-1) currentMenuSelectionIdx = childCount-1;
+void setKerfWidth() {
+  setValue(&p_kerfSize, 0.025);
+}
 
-  Serial.print("INC:");
-  Serial.println(eb.increment());
+void setValue(float *settingValue, float increment) {
+  uint16_t setting_title_w, setting_title_h;
+  previousMenuItem = currentMenuItem;
+  erasePrevious();
 
-  Serial.print("INDEX:");
-  Serial.println(currentMenuSelectionIdx);
+  drawTitle(currentMenuItem->children[currentMenuSelectionIdx]->caption, WHITE);
+  
+  // draw screen for setting
+  drawSettingValue(settingValue, 3, WHITE);
 
-  if (currentMenuSelectionIdx != oldIndex) {
-    drawScreen(false);
-  }  
-  // Serial.println("************");
-  // Serial.print("eb1 incremented by: ");
-  // Serial.println(eb.increment());
-  // Serial.print("eb1 position is: ");
-  // Serial.println(eb.position());
+  int8_t val;
+
+  while (true) {
+    if( val=read_rotary() ) {
+      drawSettingValue(settingValue, 3, BG_COLOR);
+
+      if (val > 0) {
+        *settingValue += increment;
+      } else {
+        *settingValue -= increment;
+      }
+      drawSettingValue(settingValue, 3, WHITE);
+    }
+
+    // check for button push to move back to previous menu
+    if (button.isPressedRaw()) {
+      drawSettingValue(settingValue, 3, BG_COLOR);
+
+      drawTitle(currentMenuItem->children[currentMenuSelectionIdx]->caption, BG_COLOR);
+
+      goBack();
+      break;
+    }
+  }
+}
+
+void drawTitle(String text, uint16_t color) {
+  uint16_t setting_title_w, setting_title_h;
+
+  tft.setTextSize(TITLE_TXT_SIZE);
+  getTextDimensions(text, &setting_title_w, &setting_title_h);
+
+  // draw title
+  uint16_t offset = (lcd_width / 2) - (setting_title_w / 2);
+  tft.setCursor(offset, 5);  
+  tft.setTextColor(color);
+  tft.print(text);
+}
+
+void drawSettingValue(float *settingValue, int precision, uint16_t color) {
+
+  int setting_value_w, setting_value_h;
+  char s[10];
+  tft.setTextSize(SETTING_TXT_SIZE);
+  tft.setTextColor(color);
+  dtostrf(*settingValue, 4, precision, s);
+
+  String sValue = String(s);
+  Serial.print("value:");
+  Serial.println(sValue);
+  getTextDimensions(sValue, &setting_value_w, &setting_value_h);
+  
+  uint16_t offset_x = (lcd_width / 2) - (setting_value_w / 2);
+  uint16_t offset_y = (lcd_height / 2) - (setting_value_h / 2);
+
+  tft.setCursor(offset_x, offset_y);  
+  tft.print(sValue);
+
+}
+
+void goBack() {
+  menuItem *temp = previousMenuItem;
+  previousMenuItem = currentMenuItem;
+  erasePrevious();
+  currentMenuItem = temp;
+  currentMenuSelectionIdx = 0;
+  drawScreen(true);
 }
 
 void setup() {
-  pinMode(48, INPUT_PULLUP);
-  pinMode(50, INPUT_PULLUP);
+  pinMode(CLK, INPUT);
+  pinMode(CLK, INPUT_PULLUP);
+  pinMode(DATA, INPUT);
+  pinMode(DATA, INPUT_PULLUP);
+  pinMode(BUTTON, INPUT_PULLUP);
+
   uint16_t ID = tft.readID();
 
   tft.begin(ID);
   tft.setRotation(1);
 
-  int width = tft.width();
-  int height = tft.height();
-  tft.fillScreen(BLUE);
+  lcd_width = tft.width();
+  lcd_height = tft.height();
+  tft.fillScreen(BG_COLOR);
   
   // put your setup code here, to run once:
-  Serial.begin(9600);
+  Serial.begin(115200);
   Serial.print("hello...\n");
 
-  topLevel = {"*** Box Jointer ***", testFunction, {
-    new menuItem{"Settings", testFunction2},
-    new menuItem{"Programs", testFunction},
-    new menuItem{"Control", testFunction},
-    new menuItem{"Run", testFunction},
+  button.setEventHandler(handleEvent);
+  topLevel = {"*** Box Jointer ***", {
+    new menuItem{"Settings", {
+      new menuItem{"<- Go Back", {}, goBack},
+      new menuItem{"Kerf Width", {}, setKerfWidth},
+      new menuItem{"Setting Two", {}, testFunction},
+      new menuItem{"Setting Three", {}, testFunction},
+      new menuItem{"Setting Four", {}, testFunction},
+      new menuItem{"Setting Five", {}, testFunction},
+      new menuItem{"Setting Six", {}, testFunction},
+    }, testFunction2},
+    new menuItem{"Programs", {}, testFunction},
+    new menuItem{"Control", {}, testFunction},
+    new menuItem{"Run", {}, testFunction},
   }};
   
   currentMenuItem = &topLevel;
   previousMenuItem = &topLevel;
   currentMenuSelectionIdx = 0;
 
-  drawScreen(true);
+  tft.setTextSize(MENU_ITEM_TXT_SIZE);
+  getTextDimensions("AAAA", &text_w, &text_h);
 
-  //Link the event(s) to your function
-  eb1.setClickHandler(onEb1Clicked);
-  eb1.setEncoderHandler(onEb1Encoder);
+  drawScreen(true);
+}
+
+static uint8_t prevNextCode = 0;
+static uint16_t store=0;
+
+// A vald CW or  CCW move returns 1, invalid returns 0.
+int8_t read_rotary() {
+  static int8_t rot_enc_table[] = {0,1,1,0,1,0,0,1,1,0,0,1,0,1,1,0};
+
+  prevNextCode <<= 2;
+  if (digitalRead(DATA)) prevNextCode |= 0x02;
+  if (digitalRead(CLK)) prevNextCode |= 0x01;
+  prevNextCode &= 0x0f;
+
+   // If valid then store as 16 bit data.
+   if  (rot_enc_table[prevNextCode] ) {
+      store <<= 4;
+      store |= prevNextCode;
+      if ((store&0xff)==0x2b) return -1;
+      if ((store&0xff)==0x17) return 1;
+   }
+   return 0;
 }
 
 void loop() {
-  eb1.update();
-  delay(10);
+  static int8_t val;
+  if( val=read_rotary() ) {
+    int oldIndex = currentMenuSelectionIdx;
+
+    int childCount;
+    getChildMenuCount(&childCount, currentMenuItem);
+    currentMenuSelectionIdx += val;
+
+    if (currentMenuSelectionIdx < 0) currentMenuSelectionIdx = 0;
+    if (currentMenuSelectionIdx >= childCount-1) currentMenuSelectionIdx = childCount-1;
+    
+    if (oldIndex != currentMenuSelectionIdx) {
+      previousMenuSelectionIdx = oldIndex;
+      drawScreen();
+    }
+  }
+
+  button.check();
+}
+
+void handleEvent(AceButton* /* button */, uint8_t eventType,
+    uint8_t /* buttonState */) {
+  switch (eventType) {
+    case AceButton::kEventPressed:
+      break;
+    case AceButton::kEventReleased:
+      selectItem();
+      break;
+  }
 }
