@@ -1,3 +1,4 @@
+#include <Adafruit_GFX.h>
 #include <MCUFRIEND_kbv.h>
 MCUFRIEND_kbv tft;
 
@@ -90,7 +91,30 @@ void erasePrevious() {
   }  
 }
 
+void eraseCurrent() {
+
+  drawTitle(currentMenuItem->caption, BG_COLOR);
+
+  tft.setTextSize(MENU_ITEM_TXT_SIZE);
+  
+  for (int i=0; i < 10; i++) {
+    if (currentMenuItem->children[i] != NULL) {
+      if (i == currentMenuSelectionIdx) {
+        tft.fillRect(SCREEN_MARGIN + 1, SCREEN_MARGIN + ((text_h + VERTICAL_TEXT_SPACING) * i) + 1, 
+          lcd_width - (SCREEN_MARGIN * 2) - 2, text_h + VERTICAL_TEXT_SPACING - 2, BG_COLOR);
+      }
+      tft.setCursor(TEXT_SCREEN_MARGIN, TEXT_SCREEN_MARGIN + ((text_h + VERTICAL_TEXT_SPACING) * i));
+      tft.print(currentMenuItem->children[i]->caption);
+    }
+  }  
+}
+
+
 void drawScreen(bool addTitle=false) {
+
+  Serial.println("****");
+  Serial.println(currentMenuItem->caption);
+  Serial.println(previousMenuItem->caption);
 
   tft.drawRect(SCREEN_MARGIN, SCREEN_MARGIN, lcd_width - (SCREEN_MARGIN * 2), lcd_height - (SCREEN_MARGIN * 2), WHITE);
 
@@ -135,8 +159,7 @@ void setKerfWidth() {
 
 void setValue(float *settingValue, float increment) {
   uint16_t setting_title_w, setting_title_h;
-  previousMenuItem = currentMenuItem;
-  erasePrevious();
+  eraseCurrent();
 
   drawTitle(currentMenuItem->children[currentMenuSelectionIdx]->caption, WHITE);
   
@@ -148,7 +171,6 @@ void setValue(float *settingValue, float increment) {
   while (true) {
     if( val=read_rotary() ) {
       drawSettingValue(settingValue, 3, BG_COLOR);
-
       if (val > 0) {
         *settingValue += increment;
       } else {
@@ -160,10 +182,9 @@ void setValue(float *settingValue, float increment) {
     // check for button push to move back to previous menu
     if (button.isPressedRaw()) {
       drawSettingValue(settingValue, 3, BG_COLOR);
-
       drawTitle(currentMenuItem->children[currentMenuSelectionIdx]->caption, BG_COLOR);
 
-      goBack();
+      drawScreen(true);
       break;
     }
   }
@@ -191,8 +212,6 @@ void drawSettingValue(float *settingValue, int precision, uint16_t color) {
   dtostrf(*settingValue, 4, precision, s);
 
   String sValue = String(s);
-  Serial.print("value:");
-  Serial.println(sValue);
   getTextDimensions(sValue, &setting_value_w, &setting_value_h);
   
   uint16_t offset_x = (lcd_width / 2) - (setting_value_w / 2);
