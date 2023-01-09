@@ -1,8 +1,8 @@
-#include <Adafruit_GFX.h>
 #include <MCUFRIEND_kbv.h>
 MCUFRIEND_kbv tft;
 
 #include <AceButton.h>
+#include <FlexyStepper.h>
 #include "boxjointmachine.h"
 
 // Assign human-readable names to some common 16-bit color values:
@@ -31,12 +31,18 @@ MCUFRIEND_kbv tft;
 #define DATA 50
 #define BUTTON 52
 
+#define MOTOR_STEP_PIN 51
+#define MOTOR_DIRECTION_PIN 53
+
+#define PORTRAIT  0
+#define LANDSCAPE 1
+
+#define ORIENTATION  LANDSCAPE
+
+FlexyStepper stepper;
+
 void testFunction() {
   Serial.println("foo");
-}
-
-void testFunction2() {
-  Serial.println("bar");
 }
 
 using namespace ace_button;
@@ -49,6 +55,10 @@ uint16_t text_w, text_h;
 uint16_t title_w, title_h;
 
 float p_kerfSize = 3.175;
+float p_toothSize = 5;
+float p_jogSize = .5;
+
+float currentPosition = 0;
 
 menuItem topLevel;
 menuItem *currentMenuItem, *previousMenuItem;
@@ -73,50 +83,33 @@ void getTextDimensions(String text, uint16_t* w, uint16_t* h) {
   tft.getTextBounds(text, 0, 0, &x1, &y1, w, h);
 }
 
-void erasePrevious() {
-
-  drawTitle(previousMenuItem->caption, BG_COLOR);
+void eraseMenuItems(menuItem *targetMenuItem) {
+  drawTitle(targetMenuItem->caption, BG_COLOR);
 
   tft.setTextSize(MENU_ITEM_TXT_SIZE);
   
   for (int i=0; i < 10; i++) {
-    if (previousMenuItem->children[i] != NULL) {
+    if (targetMenuItem->children[i] != NULL) {
       if (i == currentMenuSelectionIdx) {
         tft.fillRect(SCREEN_MARGIN + 1, SCREEN_MARGIN + ((text_h + VERTICAL_TEXT_SPACING) * i) + 1, 
           lcd_width - (SCREEN_MARGIN * 2) - 2, text_h + VERTICAL_TEXT_SPACING - 2, BG_COLOR);
+        continue;
       }
       tft.setCursor(TEXT_SCREEN_MARGIN, TEXT_SCREEN_MARGIN + ((text_h + VERTICAL_TEXT_SPACING) * i));
-      tft.print(currentMenuItem->children[i]->caption);
+      tft.print(targetMenuItem->children[i]->caption);
     }
-  }  
+  }    
+}
+
+void erasePrevious() {
+  eraseMenuItems(previousMenuItem);
 }
 
 void eraseCurrent() {
-
-  drawTitle(currentMenuItem->caption, BG_COLOR);
-
-  tft.setTextSize(MENU_ITEM_TXT_SIZE);
-  
-  for (int i=0; i < 10; i++) {
-    if (currentMenuItem->children[i] != NULL) {
-      if (i == currentMenuSelectionIdx) {
-        tft.fillRect(SCREEN_MARGIN + 1, SCREEN_MARGIN + ((text_h + VERTICAL_TEXT_SPACING) * i) + 1, 
-          lcd_width - (SCREEN_MARGIN * 2) - 2, text_h + VERTICAL_TEXT_SPACING - 2, BG_COLOR);
-      }
-      tft.setCursor(TEXT_SCREEN_MARGIN, TEXT_SCREEN_MARGIN + ((text_h + VERTICAL_TEXT_SPACING) * i));
-      tft.print(currentMenuItem->children[i]->caption);
-    }
-  }  
+  eraseMenuItems(currentMenuItem);
 }
 
-
 void drawScreen(bool addTitle=false) {
-
-  Serial.println("****");
-  Serial.println(currentMenuItem->caption);
-  Serial.println(previousMenuItem->caption);
-
-  tft.drawRect(SCREEN_MARGIN, SCREEN_MARGIN, lcd_width - (SCREEN_MARGIN * 2), lcd_height - (SCREEN_MARGIN * 2), WHITE);
 
   if (addTitle) drawTitle(currentMenuItem->caption, WHITE);
 
@@ -129,7 +122,7 @@ void drawScreen(bool addTitle=false) {
       if (i == currentMenuSelectionIdx) {
         tft.fillRect(SCREEN_MARGIN + 1, SCREEN_MARGIN + ((text_h + VERTICAL_TEXT_SPACING) * i) + 1, 
           lcd_width - (SCREEN_MARGIN * 2) - 2, text_h + VERTICAL_TEXT_SPACING - 2, WHITE);
-        tft.setTextColor(BLACK);
+        tft.setTextColor(BG_COLOR);
       } else {
         tft.setTextColor(WHITE);
       }
@@ -157,6 +150,94 @@ void setKerfWidth() {
   setValue(&p_kerfSize, 0.025);
 }
 
+void setToothSize() {
+  setValue(&p_toothSize, 0.5);
+}
+
+void setJogLength() {
+  setValue(&p_jogSize, 0.1);
+}
+
+void setHome() {
+  stepper.setCurrentPositionInMillimeters(0);
+  currentPosition = 0;
+}
+
+void goHome() {
+  stepper.moveToPositionInMillimeters(0);
+  currentPosition = 0;
+}
+void jogPosition() {
+  uint16_t setting_title_w, setting_title_h;
+  eraseCurrent();
+
+  drawTitle(currentMenuItem->children[currentMenuSelectionIdx]->caption, WHITE);
+
+  // draw screen for value
+  drawSettingValue(&currentPosition, 2, WHITE);
+
+  int8_t val;
+
+  while (true) {
+    if( val=read_rotary() ) {
+      drawSettingValue(&currentPosition, 2, BG_COLOR);
+      if (val > 0) {
+        currentPosition += p_jogSize;
+      } else {
+        currentPosition -= p_jogSize;
+      }
+      drawSettingValue(&currentPosition, 2, WHITE);
+
+      stepper.moveToPositionInMillimeters(currentPosition);
+    }
+
+    // check for button push to move back to previous menu
+    if (button.isPressedRaw()) {
+      drawSettingValue(&currentPosition, 2, BG_COLOR);
+      drawTitle(currentMenuItem->children[currentMenuSelectionIdx]->caption, BG_COLOR);
+
+      drawScreen(true);
+      break;
+    }
+  }
+}
+
+void moveTo() {
+  uint16_t setting_title_w, setting_title_h;
+  eraseCurrent();
+
+  drawTitle(currentMenuItem->children[currentMenuSelectionIdx]->caption, WHITE);
+
+  // draw screen for value
+  drawSettingValue(&currentPosition, 2, WHITE);
+
+  int8_t val;
+
+  while (true) {
+    if( val=read_rotary() ) {
+      drawSettingValue(&currentPosition, 2, BG_COLOR);
+      if (val > 0) {
+        currentPosition += 1;
+      } else {
+        currentPosition -= 1;
+      }
+      drawSettingValue(&currentPosition, 2, WHITE);
+    }
+
+    // check for button push to move back to previous menu
+    if (button.isPressedRaw()) {
+      stepper.moveToPositionInMillimeters(currentPosition);
+
+      drawSettingValue(&currentPosition, 2, BG_COLOR);
+      drawTitle(currentMenuItem->children[currentMenuSelectionIdx]->caption, BG_COLOR);
+
+      drawScreen(true);
+      break;
+    }
+  }
+}
+
+
 void setValue(float *settingValue, float increment) {
   uint16_t setting_title_w, setting_title_h;
   eraseCurrent();
@@ -164,24 +245,24 @@ void setValue(float *settingValue, float increment) {
   drawTitle(currentMenuItem->children[currentMenuSelectionIdx]->caption, WHITE);
   
   // draw screen for setting
-  drawSettingValue(settingValue, 3, WHITE);
+  drawSettingValue(settingValue, 2, WHITE);
 
   int8_t val;
 
   while (true) {
     if( val=read_rotary() ) {
-      drawSettingValue(settingValue, 3, BG_COLOR);
+      drawSettingValue(settingValue, 2, BG_COLOR);
       if (val > 0) {
         *settingValue += increment;
       } else {
         *settingValue -= increment;
       }
-      drawSettingValue(settingValue, 3, WHITE);
+      drawSettingValue(settingValue, 2, WHITE);
     }
 
     // check for button push to move back to previous menu
     if (button.isPressedRaw()) {
-      drawSettingValue(settingValue, 3, BG_COLOR);
+      drawSettingValue(settingValue, 2, BG_COLOR);
       drawTitle(currentMenuItem->children[currentMenuSelectionIdx]->caption, BG_COLOR);
 
       drawScreen(true);
@@ -238,32 +319,43 @@ void setup() {
   pinMode(DATA, INPUT_PULLUP);
   pinMode(BUTTON, INPUT_PULLUP);
 
+  stepper.connectToPins(MOTOR_STEP_PIN, MOTOR_DIRECTION_PIN);
+  stepper.setStepsPerMillimeter(205);
+  stepper.setSpeedInMillimetersPerSecond(70.0);
+  stepper.setAccelerationInMillimetersPerSecondPerSecond(150.0);
+
   uint16_t ID = tft.readID();
 
   tft.begin(ID);
-  tft.setRotation(1);
+  tft.setRotation(ORIENTATION);
 
   lcd_width = tft.width();
   lcd_height = tft.height();
   tft.fillScreen(BG_COLOR);
   
   // put your setup code here, to run once:
-  Serial.begin(115200);
-  Serial.print("hello...\n");
+  Serial.begin(9600);
 
   button.setEventHandler(handleEvent);
-  topLevel = {"*** Box Jointer ***", {
+  topLevel = {"Box Jointer", {
     new menuItem{"Settings", {
       new menuItem{"<- Go Back", {}, goBack},
       new menuItem{"Kerf Width", {}, setKerfWidth},
-      new menuItem{"Setting Two", {}, testFunction},
-      new menuItem{"Setting Three", {}, testFunction},
-      new menuItem{"Setting Four", {}, testFunction},
-      new menuItem{"Setting Five", {}, testFunction},
-      new menuItem{"Setting Six", {}, testFunction},
-    }, testFunction2},
+      new menuItem{"Tooth Size", {}, setToothSize},
+      new menuItem{"Jog Length", {}, setJogLength},
+      // new menuItem{"Setting Three", {}, testFunction},
+      // new menuItem{"Setting Four", {}, testFunction},
+      // new menuItem{"Setting Five", {}, testFunction},
+      // new menuItem{"Setting Six", {}, testFunction},
+    }, testFunction},
     new menuItem{"Programs", {}, testFunction},
-    new menuItem{"Control", {}, testFunction},
+    new menuItem{"Control", {
+      new menuItem{"<- Go Back", {}, goBack},
+      new menuItem{"Go Home", {}, goHome},
+      new menuItem{"Set Home", {}, setHome},
+      new menuItem{"Jog", {}, jogPosition},
+      new menuItem{"Move", {}, moveTo},
+    }, testFunction},
     new menuItem{"Run", {}, testFunction},
   }};
   
@@ -273,6 +365,8 @@ void setup() {
 
   tft.setTextSize(MENU_ITEM_TXT_SIZE);
   getTextDimensions("AAAA", &text_w, &text_h);
+
+  tft.drawRect(SCREEN_MARGIN, SCREEN_MARGIN, lcd_width - (SCREEN_MARGIN * 2), lcd_height - (SCREEN_MARGIN * 2), WHITE);
 
   drawScreen(true);
 }
