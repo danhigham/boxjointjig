@@ -3,7 +3,9 @@ MCUFRIEND_kbv tft;
 
 #include <AceButton.h>
 #include <FlexyStepper.h>
+#include <ArduinoSTL.h>
 #include "boxjointmachine.h"
+// #include <vector>
 
 // Assign human-readable names to some common 16-bit color values:
 #define BLACK   0x0000
@@ -23,7 +25,9 @@ MCUFRIEND_kbv tft;
 
 #define SETTING_TXT_SIZE 10
 #define TITLE_TXT_SIZE 3
-#define MENU_ITEM_TXT_SIZE 2
+#define MENU_ITEM_TXT_SIZE 3
+#define STATUS_TEXT_SIZE 5
+#define WARN_TEXT_SIZE 10
 
 #define BG_COLOR DARK_BLUE
 
@@ -57,6 +61,14 @@ uint16_t title_w, title_h;
 float p_kerfSize = 3.175;
 float p_toothSize = 5;
 float p_jogSize = .5;
+float p_materialWidth = 100;
+float p_fingerCount = 6;
+
+std::vector<float> oddPattern;
+std::vector<float> evenPattern;
+
+pattern patterns[2];
+int patternIndex = 0;
 
 float currentPosition = 0;
 
@@ -67,8 +79,8 @@ int previousMenuSelectionIdx, currentMenuSelectionIdx;
 int buttonState;            // the current reading from the input pin
 int lastButtonState = LOW;  // the previous reading from the input pin
 
-unsigned long lastDebounceTime = 0;  // the last time the output pin was toggled
-unsigned long debounceDelay = 50;    // the debounce time; increase if the output flickers
+// unsigned long lastDebounceTime = 0;  // the last time the output pin was toggled
+// unsigned long debounceDelay = 50;    // the debounce time; increase if the output flickers
 
 void getChildMenuCount(int* count, menuItem* targetMenuItem) {
   *count = 0;
@@ -136,14 +148,20 @@ void selectItem() {
   // switch menu items
   int childCount;
   getChildMenuCount(&childCount, currentMenuItem->children[currentMenuSelectionIdx]);
+
   if (childCount > 0) {
     previousMenuItem = currentMenuItem;
     erasePrevious();
     // switch menu items out
     currentMenuItem = currentMenuItem->children[currentMenuSelectionIdx];
+    if (currentMenuItem->parent == NULL) currentMenuItem->parent = previousMenuItem;
     currentMenuSelectionIdx = 0;
     drawScreen(true);
+
+    if (currentMenuItem->function != NULL) currentMenuItem->function();
+
   } else if (currentMenuItem->function != NULL) currentMenuItem->children[currentMenuSelectionIdx]->function();
+  
 }
 
 void setKerfWidth() {
@@ -158,6 +176,14 @@ void setJogLength() {
   setValue(&p_jogSize, 0.1);
 }
 
+void setMaterialWidth() {
+  setValue(&p_materialWidth, 0.5);
+}
+
+void setFingerCount() {
+  setValue(&p_fingerCount, 1);
+}
+
 void setHome() {
   stepper.setCurrentPositionInMillimeters(0);
   currentPosition = 0;
@@ -167,6 +193,7 @@ void goHome() {
   stepper.moveToPositionInMillimeters(0);
   currentPosition = 0;
 }
+
 void jogPosition() {
   uint16_t setting_title_w, setting_title_h;
   eraseCurrent();
@@ -237,7 +264,6 @@ void moveTo() {
   }
 }
 
-
 void setValue(float *settingValue, float increment) {
   uint16_t setting_title_w, setting_title_h;
   eraseCurrent();
@@ -248,16 +274,27 @@ void setValue(float *settingValue, float increment) {
   drawSettingValue(settingValue, 2, WHITE);
 
   int8_t val;
+  int lastEventTime = millis();
+  float actualIncrement = increment;
 
   while (true) {
     if( val=read_rotary() ) {
+      int now = millis();
+
+      if ((now - lastEventTime) < 100) {
+        actualIncrement = increment * 10;
+      } else {
+        actualIncrement = increment;
+      }
+      
       drawSettingValue(settingValue, 2, BG_COLOR);
       if (val > 0) {
-        *settingValue += increment;
+        *settingValue += actualIncrement;
       } else {
-        *settingValue -= increment;
+        *settingValue -= actualIncrement;
       }
       drawSettingValue(settingValue, 2, WHITE);
+      lastEventTime = millis();
     }
 
     // check for button push to move back to previous menu
@@ -305,6 +342,7 @@ void drawSettingValue(float *settingValue, int precision, uint16_t color) {
 
 void goBack() {
   menuItem *temp = previousMenuItem;
+  if (currentMenuItem->parent != NULL) temp = currentMenuItem->parent; 
   previousMenuItem = currentMenuItem;
   erasePrevious();
   currentMenuItem = temp;
@@ -343,12 +381,19 @@ void setup() {
       new menuItem{"Kerf Width", {}, setKerfWidth},
       new menuItem{"Tooth Size", {}, setToothSize},
       new menuItem{"Jog Length", {}, setJogLength},
-      // new menuItem{"Setting Three", {}, testFunction},
-      // new menuItem{"Setting Four", {}, testFunction},
-      // new menuItem{"Setting Five", {}, testFunction},
-      // new menuItem{"Setting Six", {}, testFunction},
     }, testFunction},
-    new menuItem{"Programs", {}, testFunction},
+    new menuItem{"Programs", {
+      new menuItem{"<- Go Back", {}, goBack},
+      new menuItem{"Standard (Odd + Even)", {
+        new menuItem{"<- Go Back", {}, goBack},
+        new menuItem{"Set Material Width", {}, setMaterialWidth},
+        new menuItem{"Set Finger Count", {}, setFingerCount},          
+        new menuItem{"Run", {
+          new menuItem{"STOP", {}, exitProgram},
+          new menuItem{"Advance", {}, standardAdvance},
+        }, standardSetup},          
+      }, testFunction},
+    }, testFunction},
     new menuItem{"Control", {
       new menuItem{"<- Go Back", {}, goBack},
       new menuItem{"Go Home", {}, goHome},
@@ -356,7 +401,6 @@ void setup() {
       new menuItem{"Jog", {}, jogPosition},
       new menuItem{"Move", {}, moveTo},
     }, testFunction},
-    new menuItem{"Run", {}, testFunction},
   }};
   
   currentMenuItem = &topLevel;
@@ -370,6 +414,100 @@ void setup() {
 
   drawScreen(true);
 }
+
+void exitProgram() {
+  displayPatternName(patterns[patternIndex].caption, BG_COLOR);
+  displayCutStopMessage(true, true);
+  goBack();
+}
+
+void displayPatternName(String patternName, uint16_t color) {
+  uint16_t text_w, text_h;
+
+  tft.setTextSize(STATUS_TEXT_SIZE);
+  getTextDimensions(patternName, &text_w, &text_h);
+
+  // draw title
+  uint16_t offset = (lcd_width / 2) - (text_w / 2);
+  tft.setCursor(offset, 120);  
+  tft.setTextColor(color);
+  tft.print(patternName);
+}
+
+void displayCutStopMessage(bool cut, bool hide) {
+  uint16_t text_w, text_h;
+
+  String text = "CUT";
+  uint16_t color = GREEN;
+
+  if (!cut) {
+    text = "HOLD";
+    color = RED;
+  }
+
+  if (hide) {
+    color = BG_COLOR;
+  }
+
+  tft.setTextSize(WARN_TEXT_SIZE);
+  getTextDimensions(text, &text_w, &text_h);
+
+  uint16_t offset = (lcd_width / 2) - (text_w / 2);
+  tft.setCursor(offset, 185);  
+  tft.setTextColor(color);
+  tft.print(text);
+}
+
+void standardSetup() {
+  
+  patterns[0].caption = "Even side";
+  patterns[1].caption = "Odd side";
+
+  float fingerWidth = p_materialWidth / (p_fingerCount + (p_fingerCount - 1));
+  patterns[0].steps.clear();
+
+  for (int f=1; f<p_fingerCount; f++) {
+
+    float fingerStart = ((f+(f-1))*fingerWidth) + p_kerfSize; // f-1 number of gaps
+    float fingerEnd = ((f+(f-1))*fingerWidth) + fingerWidth;
+    
+    patterns[0].steps.push_back(fingerStart); // beginning of finger
+    patterns[0].steps.push_back(fingerEnd); // end of finger
+
+    for (int g=fingerStart+(p_kerfSize/2); g<fingerEnd; g+=(p_kerfSize/2)) { //everything in between
+      patterns[0].steps.push_back(g); 
+    }
+  }
+
+  patterns[1].steps.clear();
+
+  for (int f=0; f<(p_fingerCount); f++) {
+    float fingerStart = ((f*2)*fingerWidth) + p_kerfSize;
+    float fingerEnd = ((f*2)*fingerWidth) + fingerWidth;
+
+    patterns[1].steps.push_back(fingerStart);
+    patterns[1].steps.push_back(fingerEnd);
+
+    for (int g=fingerStart+(p_kerfSize/2); g<fingerEnd; g+=(p_kerfSize/2)) { //everything in between
+      patterns[1].steps.push_back(g); 
+    }
+  }  
+
+  previousMenuSelectionIdx = 0;
+  currentMenuSelectionIdx = 1;
+  drawScreen(true);
+
+  // display pattern name
+  displayPatternName(patterns[0].caption, WHITE);
+
+  // display cut message
+  displayCutStopMessage(true, false);
+}
+
+void standardAdvance() {
+
+}
+
 
 static uint8_t prevNextCode = 0;
 static uint16_t store=0;
